@@ -1,10 +1,7 @@
 package com.lagou.edu.mvcframework.servlet;
 
 import com.lagou.demo.service.IDemoService;
-import com.lagou.edu.mvcframework.annotations.LagouAutowired;
-import com.lagou.edu.mvcframework.annotations.LagouController;
-import com.lagou.edu.mvcframework.annotations.LagouRequestMapping;
-import com.lagou.edu.mvcframework.annotations.LagouService;
+import com.lagou.edu.mvcframework.annotations.*;
 import com.lagou.edu.mvcframework.pojo.Handler;
 import org.apache.commons.lang3.StringUtils;
 
@@ -20,12 +17,19 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.nio.charset.Charset;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class LgDispatcherServlet extends HttpServlet {
 
+    private static Map<String,String[]> userRoles = new HashMap<>();
+
+    static{
+        userRoles.put("zhangsan",new String[]{"1","2"});
+        userRoles.put("lisi",new String[]{"2"});
+    }
 
     private Properties properties = new Properties();
 
@@ -34,6 +38,9 @@ public class LgDispatcherServlet extends HttpServlet {
     // ioc容器
     private Map<String,Object> ioc = new HashMap<String,Object>();
 
+    private Map<String,String[]> classRole = new HashMap<String,String[]>();
+
+    private Map<String,String[]> methodRole = new HashMap<String,String[]>();
 
     // handlerMapping
     //private Map<String,Method> handlerMapping = now HashMap<>(); // 存储url和Method之间的映射关系
@@ -58,16 +65,46 @@ public class LgDispatcherServlet extends HttpServlet {
         // 5 构造一个HandlerMapping处理器映射器，将配置好的url和Method建立映射关系
         initHandlerMapping();
 
+        initHandlerSecurity();
         System.out.println("lagou mvc 初始化完成....");
 
         // 等待请求进入，处理请求
     }
 
+
+    private void initHandlerSecurity() {
+        if(ioc.isEmpty()) {return;}
+
+        for(Map.Entry<String,Object> entry: ioc.entrySet()) {
+            // 获取ioc中当前遍历的对象的class类型
+            Class<?> aClass = entry.getValue().getClass();
+            if(aClass.isAnnotationPresent(LagouSecurity.class)) {
+                LagouSecurity annotation = aClass.getAnnotation(LagouSecurity.class);
+                String[] roles = annotation.value();
+                classRole.put(aClass.getSimpleName(),roles);
+            }
+
+            // 获取方法
+            Method[] methods = aClass.getMethods();
+            for (int i = 0; i < methods.length; i++) {
+                Method method = methods[i];
+                if(method.isAnnotationPresent(LagouSecurity.class)){
+                    LagouSecurity annotation = method.getAnnotation(LagouSecurity.class);
+                    String[] roles = annotation.value();
+                    methodRole.put(method.getName(), roles);
+                }
+            }
+
+
+        }
+
+    }
+
     /*
-        构造一个HandlerMapping处理器映射器
-        最关键的环节
-        目的：将url和method建立关联
-     */
+      构造一个HandlerMapping处理器映射器
+      最关键的环节
+      目的：将url和method建立关联
+   */
     private void initHandlerMapping() {
         if(ioc.isEmpty()) {return;}
 
@@ -289,6 +326,7 @@ public class LgDispatcherServlet extends HttpServlet {
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        resp.setCharacterEncoding("UTF-8");
         // 处理请求：根据url，找到对应的Method方法，进行调用
         // 获取uri
 //        String requestURI = req.getRequestURI();
@@ -340,8 +378,30 @@ public class LgDispatcherServlet extends HttpServlet {
         int responseIndex = handler.getParamIndexMapping().get(HttpServletResponse.class.getSimpleName()); // 1
         paraValues[responseIndex] = resp;
 
+        String userName = paraValues[2].toString();
+        String[] userRole = userRoles.get(userName);
+        if(userRole==null){
+            resp.getWriter().println("该用户没有配置权限");
+            return;
+        }
 
 
+        String className = handler.getController().getClass().getSimpleName();
+        String[] classRoles = classRole.get(className);
+        if(classRoles != null){
+            if(!isHaveRoles(userRole,classRoles)){
+                resp.getWriter().println("该用户没有权限访问");
+                return;
+            }
+        }
+        String methodName = handler.getMethod().getName();
+        String[] methodRoles = methodRole.get(methodName);
+        if(methodRoles != null){
+            if(!isHaveRoles(userRole,methodRoles)){
+                resp.getWriter().println("该用户没有权限访问");
+                return;
+            }
+        }
 
         // 最终调用handler的method属性
         try {
@@ -356,6 +416,16 @@ public class LgDispatcherServlet extends HttpServlet {
 
     }
 
+    private boolean isHaveRoles(String[] userRoles,String[] securityRoles){
+        for (String userRole : userRoles) {
+            for (String securityRole : securityRoles) {
+                if(userRole.equals(securityRole)){
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     private Handler getHandler(HttpServletRequest req) {
         if(handlerMapping.isEmpty()){return null;}
 
